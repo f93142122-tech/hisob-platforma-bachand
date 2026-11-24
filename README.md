@@ -26,7 +26,7 @@ npm start
 npm test
 ```
 
-Testlar alohida `savdo_test` bazasida ishlaydi va ishchi ma'lumotlarga tegmaydi. Ular savdo, chegirma, nasiya, qaytarish, foyda va sof foyda, doimiy xarajatlar, kassa solishtiruvi, idempotentlik va sinxronlash nizolarini tekshiradi.
+Testlar alohida `savdo_test` bazasida ishlaydi va ishchi ma'lumotlarga tegmaydi. Ular savdo, chegirma, nasiya, qaytarish, foyda va sof foyda, doimiy xarajatlar, kassa solishtiruvi, idempotentlik va bir vaqtda tahrirlashni tekshiradi.
 
 ## Tuzilishi
 

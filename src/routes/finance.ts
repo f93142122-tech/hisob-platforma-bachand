@@ -1,4 +1,4 @@
-/** Dashboard, hisobotlar, doimiy xarajatlar, kunni yakunlash va sinxronlash. */
+/** Dashboard, hisobotlar, doimiy xarajatlar, kunni yakunlash va o'zgartiruvchi amallar. */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { q, tx } from '../db.ts';
@@ -6,8 +6,8 @@ import { assertAdmin, requireAuth } from '../auth.ts';
 import { AppError, D, audit, bad, fmt, parse, todayStr, zDate, zMoney, zOptText, zPositiveMoney, zText, zUuid } from '../util.ts';
 import { expectedCash, suggestedOpening, summary } from '../services/reports.ts';
 import { dueDates } from '../services/recurring.ts';
-import { applyProductChanges, runOp } from '../services/ops.ts';
-import { productColumns, saleDetails } from './data.ts';
+import { runOp } from '../services/ops.ts';
+
 
 export async function financeRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireAuth);
@@ -152,56 +152,12 @@ export async function financeRoutes(app: FastifyInstance) {
     });
   });
 
-  // ---------- SINXRONLASH ----------
+  // ---------- O'ZGARTIRUVCHI AMALLAR ----------
+  // Har bir amal brauzerda yaratilgan UUID bilan keladi: tugma ikki marta bosilsa yoki so'rov qayta yuborilsa ham, faqat bir marta bajariladi.
   const opSchema = z.object({ id: zUuid, type: z.string(), payload: z.unknown() });
-  app.post('/api/sync/push', async (req) => {
-    const p = parse(z.object({ ops: z.array(opSchema).max(200) }), req.body);
-    const results = [];
-    for (const op of p.ops) results.push(await runOp(req.user2, op)); // tartib muhim: mahsulot avval, keyin uning savdosi
-    return { results };
-  });
-  app.get('/api/sync/snapshot', async () => {
-    const [products, categories, customers, recentSales, openDebts] = await Promise.all([
-      q(`SELECT ${productColumns} FROM products p LEFT JOIN categories c ON c.id = p.category_id WHERE NOT p.archived ORDER BY p.name`),
-      q('SELECT id, name FROM categories ORDER BY name'),
-      q('SELECT id, name, phone FROM customers ORDER BY name'),
-      q('SELECT id FROM sales ORDER BY created_at DESC LIMIT 150'),
-      q(`SELECT d.id, d.amount, cu.name AS "customerName", cu.phone AS "customerPhone", s.number AS "saleNumber", d.created_at AS "createdAt",
-                d.amount - coalesce((SELECT sum(amount) FROM debt_payments WHERE debt_id=d.id),0)
-                         - coalesce((SELECT sum(debt_reduction) FROM returns WHERE sale_id=d.sale_id),0) AS remaining
-           FROM debts d JOIN customers cu ON cu.id = d.customer_id JOIN sales s ON s.id = d.sale_id`),
-    ]);
-    const sales = [];
-    for (const r of recentSales.rows) sales.push(await saleDetails(r.id));
-    return {
-      serverTime: new Date().toISOString(), today: todayStr(),
-      products: products.rows, categories: categories.rows, customers: customers.rows, recentSales: sales,
-      openDebts: openDebts.rows.filter((d) => D(d.remaining).gt(0)).map((d) => ({ ...d, saleNumber: Number(d.saleNumber), remaining: fmt(D(d.remaining)) })),
-    };
-  });
-  app.get('/api/sync/conflicts', async () => {
-    const r = await q(`SELECT sc.id, sc.op_type AS "opType", sc.entity_id AS "entityId", sc.payload, sc.server_state AS "serverState", sc.reason,
-                              sc.created_at AS "createdAt", u.full_name AS "userName", p.name AS "productName"
-                         FROM sync_conflicts sc LEFT JOIN users u ON u.id = sc.user_id LEFT JOIN products p ON p.id = sc.entity_id
-                        WHERE sc.resolved_at IS NULL ORDER BY sc.created_at`);
-    return r.rows;
-  });
-  app.post('/api/sync/conflicts/:id/resolve', async (req) => {
-    assertAdmin(req.user2);
-    const { id } = req.params as { id: string };
-    const p = parse(z.object({ apply: z.boolean() }), req.body);
-    return tx(async (c) => {
-      const r = await c.query('SELECT * FROM sync_conflicts WHERE id=$1 AND resolved_at IS NULL FOR UPDATE', [id]);
-      if (!r.rowCount) throw bad('Nizo topilmadi yoki hal qilingan');
-      const conf = r.rows[0];
-      if (p.apply && conf.op_type === 'product.update') {
-        const cur = await c.query('SELECT * FROM products WHERE id=$1 FOR UPDATE', [conf.entity_id]);
-        await applyProductChanges(c, req.user2, conf.entity_id, conf.payload.changes, cur.rows[0]);
-      }
-      await c.query('UPDATE sync_conflicts SET resolved_at=now(), resolved_by=$2, resolution=$3 WHERE id=$1', [id, req.user2.id, p.apply ? 'applied' : 'discarded']);
-      await audit(c, req.user2.id, 'conflict.resolve', 'sync_conflict', id, { apply: p.apply });
-      return { ok: true };
-    });
+  app.post('/api/ops', async (req) => {
+    const op = parse(opSchema, req.body);
+    return runOp(req.user2, op);
   });
 }
 

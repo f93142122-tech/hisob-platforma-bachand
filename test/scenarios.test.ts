@@ -294,23 +294,21 @@ test('25–26. Smenani yopish va kassa solishtiruvi', async () => {
   assert.equal(list.length, 1);
 });
 
-test('Offline nizo: ikki qurilma bir mahsulot narxini turlicha o‘zgartirsa, ma’lumot yo‘qolmaydi', async () => {
+test('Bir vaqtda tahrirlash: boshqa foydalanuvchining o‘zgarishi jim ustidan yozilmaydi', async () => {
   const p = (await t.call('GET', '/api/products', A)).body.find((x: any) => x.id === P1);
   const a = await t.op(S, 'product.update', { id: P1, baseVersion: p.version, before: { price: p.price }, changes: { price: '110000' } });
   assert.equal(a.status, 'ok');
-  // Boshqa qurilma eski versiyani ko'rgan holda narxni o'zgartiradi → nizo
+  // Ikkinchi foydalanuvchi eski oynada narxni o'zgartiradi → rad etiladi, birinchisining narxi saqlanadi
   const b = await t.op(A, 'product.update', { id: P1, baseVersion: p.version, before: { price: p.price }, changes: { price: '105000' } });
-  assert.equal(b.status, 'conflict');
-  // Boshqa maydon (izoh) o'zgarsa — nizo emas, qo'llanadi
+  assert.equal(b.status, 'error');
+  // Boshqa maydon (izoh) o'zgarsa — to'qnashuv yo'q, qo'llanadi
   const c = await t.op(A, 'product.update', { id: P1, baseVersion: p.version, before: { note: p.note }, changes: { note: 'Yangi izoh' } });
-  assert.equal(c.status, 'ok');
-  const conflicts = (await t.call('GET', '/api/sync/conflicts', A)).body;
-  assert.equal(conflicts.length, 1);
-  const res = await t.call('POST', `/api/sync/conflicts/${conflicts[0].id}/resolve`, A, { apply: true });
-  assert.equal(res.status, 200);
+  assert.equal(c.status, 'ok', c.error);
   const after = (await t.call('GET', '/api/products', A)).body.find((x: any) => x.id === P1);
-  assert.equal(after.price, '105000.00');
+  assert.equal(after.price, '110000.00');
   assert.equal(after.note, 'Yangi izoh');
+  // Offline yo'llari olib tashlangan
+  assert.equal((await t.call('GET', '/api/sync/snapshot', A)).status, 404);
 });
 
 test('Xavfsizlik: tokensiz kirish yo‘q, sotuvchi foydalanuvchi qo‘sha olmaydi, xarajatni o‘chira olmaydi', async () => {

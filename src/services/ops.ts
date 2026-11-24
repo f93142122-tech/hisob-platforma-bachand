@@ -1,6 +1,6 @@
 /**
  * Ma'lumotni o'zgartiradigan barcha amallar shu yerda.
- * Brauzer har bir amalni o'zi yaratgan UUID bilan yuboradi (onlayn ham, offline navbatdan ham).
+ * Brauzer har bir amalni o'zi yaratgan UUID bilan yuboradi (tugma ikki marta bosilsa ham amal bir marta bajariladi).
  * Server amalni processed_ops jadvali orqali faqat BIR MARTA bajaradi — bu idempotentlik.
  * Har bir amal bitta tranzaksiyada: yoki to'liq yoziladi, yoki umuman yozilmaydi.
  */
@@ -10,7 +10,7 @@ import { tx, type Client } from '../db.ts';
 import type { AuthUser } from '../auth.ts';
 import { assertAdmin } from '../auth.ts';
 import {
-  AppError, D, Decimal, audit, bad, clientTime, fmt, parse, todayStr,
+  AppError, D, Decimal, audit, bad, fmt, parse, todayStr,
   zDate, zMoney, zOptText, zPositiveMoney, zText, zUuid,
 } from '../util.ts';
 import { isDueDate } from './recurring.ts';
@@ -18,7 +18,7 @@ import { isDueDate } from './recurring.ts';
 type Ctx = { c: Client; user: AuthUser };
 type Handler = (ctx: Ctx, payload: unknown, opId: string) => Promise<unknown>;
 
-export interface OpResult { opId: string; status: 'ok' | 'error' | 'conflict'; result?: unknown; error?: string }
+export interface OpResult { opId: string; status: 'ok' | 'error'; result?: unknown; error?: string }
 
 async function moveStock(c: Client, productId: string, delta: number, type: string, refId: string | null, note: string | null, userId: string, at: Date, movementId: string = randomUUID()) {
   const r = await c.query('UPDATE products SET stock = stock + $2, updated_at = now() WHERE id = $1 RETURNING stock', [productId, delta]);
@@ -48,7 +48,7 @@ const saleCreate: Handler = async ({ c, user }, payload) => {
   const p = parse(saleSchema, payload);
   const exists = await c.query('SELECT id, number FROM sales WHERE id=$1', [p.id]);
   if (exists.rowCount) return { id: p.id, number: Number(exists.rows[0].number) };
-  const at = clientTime(p.createdAt);
+  const at = new Date();
 
   const ids = [...new Set(p.items.map((i) => i.productId))];
   const prods = await c.query('SELECT id, name, price, cost_price FROM products WHERE id = ANY($1) ORDER BY id FOR UPDATE', [ids]);
@@ -130,7 +130,7 @@ const returnCreate: Handler = async ({ c, user }, payload) => {
   const p = parse(returnSchema, payload);
   const exists = await c.query('SELECT id FROM returns WHERE id=$1', [p.id]);
   if (exists.rowCount) return { id: p.id };
-  const at = clientTime(p.createdAt);
+  const at = new Date();
 
   const sale = await c.query('SELECT id, number, created_at FROM sales WHERE id=$1 FOR UPDATE', [p.saleId]);
   if (!sale.rowCount) throw bad('Savdo topilmadi');
@@ -211,7 +211,7 @@ const debtPaymentCreate: Handler = async ({ c, user }, payload) => {
   const remaining = await debtRemaining(c, p.debtId);
   if (D(p.amount).gt(remaining)) throw bad(`To‘lov qolgan qarzdan (${fmt(remaining)}) ko‘p bo‘lishi mumkin emas`);
   await c.query('INSERT INTO debt_payments(id, debt_id, amount, method, note, user_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)', [
-    p.id, p.debtId, p.amount, p.method, p.note, user.id, clientTime(p.createdAt),
+    p.id, p.debtId, p.amount, p.method, p.note, user.id, new Date(),
   ]);
   await audit(c, user.id, 'debt.payment', 'debt', p.debtId, { amount: p.amount, method: p.method });
   return { id: p.id, remaining: fmt(remaining.minus(p.amount)) };
@@ -229,7 +229,7 @@ const expenseCreate: Handler = async ({ c, user }, payload) => {
   if (p.expenseDate > todayStr()) throw bad('Kelajakdagi sana uchun xarajat kiritib bo‘lmaydi');
   await c.query(
     'INSERT INTO expenses(id, name, amount, category, expense_date, note, paid_from_cash, user_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-    [p.id, p.name, p.amount, p.category, p.expenseDate, p.note, p.paidFromCash, user.id, clientTime(p.createdAt)],
+    [p.id, p.name, p.amount, p.category, p.expenseDate, p.note, p.paidFromCash, user.id, new Date()],
   );
   await audit(c, user.id, 'expense.create', 'expense', p.id, { name: p.name, amount: p.amount, date: p.expenseDate });
   return { id: p.id };
@@ -272,7 +272,7 @@ const recurringConfirm: Handler = async ({ c, user }, payload) => {
   await c.query(
     `INSERT INTO expenses(id, name, amount, category, expense_date, note, paid_from_cash, recurring_id, period_key, user_id, created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-    [p.id, re.name, amount, re.category ?? 'Doimiy', p.periodKey, p.note ?? re.note, paidFromCash, re.id, p.periodKey, user.id, clientTime(p.createdAt)],
+    [p.id, re.name, amount, re.category ?? 'Doimiy', p.periodKey, p.note ?? re.note, paidFromCash, re.id, p.periodKey, user.id, new Date()],
   );
   await c.query('INSERT INTO recurring_confirmations(recurring_id, period_key, status, expense_id, user_id) VALUES ($1,$2,\'confirmed\',$3,$4)', [re.id, p.periodKey, p.id, user.id]);
   await audit(c, user.id, 'recurring.confirm', 'recurring_expense', re.id, { period: p.periodKey, amount });
@@ -336,11 +336,10 @@ function norm(k: Editable, v: unknown): string | null {
 }
 
 /**
- * Mahsulotni tahrirlash. Agar qurilma eski versiyani ko'rib o'zgartirgan bo'lsa,
- * faqat o'sha qurilma o'zgartirgan maydonlar serverda ham o'zgarmagan bo'lsagina qo'llanadi.
- * Aks holda nizo sifatida saqlanadi va administrator hal qiladi — hech narsa jim o'chib ketmaydi.
+ * Mahsulotni tahrirlash. Agar shu vaqt ichida boshqa foydalanuvchi aynan shu maydonlarni o'zgartirgan bo'lsa,
+ * uning o'zgarishi jim ustidan yozilmaydi — foydalanuvchiga sahifani yangilash so'raladi.
  */
-const productUpdate: Handler = async ({ c, user }, payload, opId) => {
+const productUpdate: Handler = async ({ c, user }, payload) => {
   const p = parse(productUpdateSchema, payload);
   const r = await c.query('SELECT * FROM products WHERE id=$1 FOR UPDATE', [p.id]);
   if (!r.rowCount) throw bad('Mahsulot topilmadi');
@@ -350,14 +349,7 @@ const productUpdate: Handler = async ({ c, user }, payload, opId) => {
   if (cur.version !== p.baseVersion) {
     const clashes = keys.filter((k) => k in p.before && norm(k, p.before[k]) !== norm(k, cur[col[k]]));
     if (clashes.length) {
-      const server: Record<string, unknown> = {};
-      for (const k of keys) server[k] = k === 'image' ? (cur.image ? '[rasm]' : null) : cur[col[k]];
-      await c.query(
-        `INSERT INTO sync_conflicts(op_id, op_type, entity_id, payload, server_state, reason, user_id) VALUES ($1,'product.update',$2,$3,$4,$5,$6)
-         ON CONFLICT (op_id) DO NOTHING`,
-        [opId, p.id, JSON.stringify(p), JSON.stringify(server), `Boshqa qurilmada o‘zgartirilgan: ${clashes.join(', ')}`, user.id],
-      );
-      return { conflict: true };
+      throw new AppError(409, 'Bu mahsulotni hozirgina boshqa foydalanuvchi o‘zgartirdi. Oynani yopib, qayta oching va o‘zgarishni takrorlang.', 'stale');
     }
   }
   await applyProductChanges(c, user, p.id, p.changes, cur);
@@ -400,7 +392,7 @@ const stockReceipt: Handler = async ({ c, user }, payload) => {
   if (p.qty < 0) throw bad('Kirim miqdori musbat bo‘lishi kerak');
   const ex = await c.query('SELECT id FROM inventory_movements WHERE id=$1', [p.id]);
   if (ex.rowCount) return { id: p.id };
-  const stock = await moveStock(c, p.productId, p.qty, 'receipt', null, p.note, user.id, clientTime(p.createdAt), p.id);
+  const stock = await moveStock(c, p.productId, p.qty, 'receipt', null, p.note, user.id, new Date(), p.id);
   await audit(c, user.id, 'stock.receipt', 'product', p.productId, { qty: p.qty, note: p.note });
   return { id: p.id, stock };
 };
@@ -409,7 +401,7 @@ const stockAdjust: Handler = async ({ c, user }, payload) => {
   if (!p.note) throw bad('Tuzatish sababini yozing');
   const ex = await c.query('SELECT id FROM inventory_movements WHERE id=$1', [p.id]);
   if (ex.rowCount) return { id: p.id };
-  const stock = await moveStock(c, p.productId, p.qty, 'adjustment', null, p.note, user.id, clientTime(p.createdAt), p.id);
+  const stock = await moveStock(c, p.productId, p.qty, 'adjustment', null, p.note, user.id, new Date(), p.id);
   await audit(c, user.id, 'stock.adjust', 'product', p.productId, { delta: p.qty, note: p.note });
   return { id: p.id, stock };
 };
@@ -437,12 +429,11 @@ export async function runOp(user: AuthUser, op: { id: string; type: string; payl
     return await tx(async (c) => {
       const done = await c.query('SELECT result FROM processed_ops WHERE op_id=$1', [op.id]);
       if (done.rowCount) {
-        const res = done.rows[0].result;
-        return { opId: op.id, status: res?.conflict ? 'conflict' : 'ok', result: res } as OpResult;
+        return { opId: op.id, status: 'ok', result: done.rows[0].result } as OpResult;
       }
       const result = (await h({ c, user }, op.payload, op.id)) ?? null;
       await c.query('INSERT INTO processed_ops(op_id, op_type, result, user_id) VALUES ($1,$2,$3,$4)', [op.id, op.type, JSON.stringify(result), user.id]);
-      return { opId: op.id, status: (result as any)?.conflict ? 'conflict' : 'ok', result } as OpResult;
+      return { opId: op.id, status: 'ok', result } as OpResult;
     });
   } catch (e: any) {
     if (e instanceof AppError) return { opId: op.id, status: 'error', error: e.message };

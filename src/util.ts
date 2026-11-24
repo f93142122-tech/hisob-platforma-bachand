@@ -47,17 +47,6 @@ export function dateOf(ts: Date): string {
   return todayStr(ts);
 }
 
-/** Qurilmadan kelgan vaqt: kelajakda (5 daqiqadan ko'p) yoki 60 kundan eski bo'lsa, rad etiladi. */
-export function clientTime(iso: string | undefined | null): Date {
-  if (!iso) return new Date();
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) throw bad('Vaqt noto‘g‘ri');
-  const now = Date.now();
-  if (d.getTime() > now + 5 * 60_000) return new Date(now);
-  if (d.getTime() < now - 60 * 86400_000) throw bad('Amal vaqti juda eski (60 kundan oshgan)');
-  return d;
-}
-
 export async function audit(c: Client, userId: string | null, action: string, entity: string | null, entityId: string | null, details?: unknown) {
   await c.query('INSERT INTO audit_logs(user_id, action, entity, entity_id, details) VALUES ($1,$2,$3,$4,$5)', [
     userId, action, entity, entityId, details === undefined ? null : JSON.stringify(details),

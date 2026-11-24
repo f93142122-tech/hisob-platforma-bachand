@@ -37,10 +37,10 @@ export async function setupTestApp() {
   await call('POST', '/api/users', adminToken, { username: 'sotuvchi', fullName: 'Sotuvchi', password: 'sotuv123', role: 'seller' });
   const sellerToken: string = (await call('POST', '/api/auth/login', undefined, { username: 'sotuvchi', password: 'sotuv123' })).body.token;
 
-  /** Bitta amalni sinxronlash yo'li orqali yuboradi (brauzer ham aynan shunday qiladi). */
+  /** Bitta amalni /api/ops orqali yuboradi (brauzer ham aynan shunday qiladi). */
   async function op(token: string, type: string, payload: any, opId = uuid()) {
-    const r = await call('POST', '/api/sync/push', token, { ops: [{ id: opId, type, payload }] });
-    return r.body.results[0] as { status: string; result?: any; error?: string };
+    const r = await call('POST', '/api/ops', token, { id: opId, type, payload });
+    return r.body as { status: string; result?: any; error?: string };
   }
 
   return {
